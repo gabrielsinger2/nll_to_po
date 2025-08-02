@@ -9,18 +9,10 @@
 *.egg-info
 PKG-INFO
 
-videos/
-build/
-logs/
-results/
-notebooks/external/
-notebooks/internal
-data/
-models/
-
 .venv
 .vscode
 
+.mypy_cache/
 .ruff_cache/
 
 __pycache__
@@ -28,4 +20,4 @@ __pycache__
 *.lock
 uv.lock
 
-unsloth_compiled_cache
+wandb/

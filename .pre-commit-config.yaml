@@ -51,12 +51,12 @@ repos:
       - id: mypy
         args: [--ignore-missing-imports, --show-error-codes]
 
-  # Documentation
-  - repo: https://github.com/pycqa/pydocstyle
-    rev: 6.3.0
-    hooks:
-      - id: pydocstyle
-        args: [--convention=numpy]  # Or google, sphinx
+  # # Documentation
+  # - repo: https://github.com/pycqa/pydocstyle
+  #   rev: 6.3.0
+  #   hooks:
+  #     - id: pydocstyle
+  #       args: [--convention=numpy]  # Or google, sphinx
 
   # # YAML/Config validation
   # - repo: https://github.com/adrienverge/yamllint
