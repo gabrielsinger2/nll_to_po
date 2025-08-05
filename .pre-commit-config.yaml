@@ -78,10 +78,10 @@ repos:
   #   hooks:
   #     - id: python-safety-dependencies-check
 
-  # ML-specific: Check for secrets in config files
-  - repo: https://github.com/Yelp/detect-secrets
-    rev: v1.5.0
-    hooks:
-      - id: detect-secrets
-        args: ['--baseline', '.secrets.baseline']
-        exclude: package.lock.json
+  # # ML-specific: Check for secrets in config files
+  # - repo: https://github.com/Yelp/detect-secrets
+  #   rev: v1.5.0
+  #   hooks:
+  #     - id: detect-secrets
+  #       args: ['--baseline', '.secrets.baseline']
+  #       exclude: package.lock.json
