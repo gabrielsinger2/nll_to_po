@@ -27,6 +27,9 @@ Notes:
 """
 
 import copy
+from datetime import datetime
+import logging
+import os
 from typing import Optional
 
 import torch
@@ -34,6 +37,8 @@ from tqdm import tqdm
 
 import nll_to_po.training.loss as L
 from nll_to_po.models.dn_policy import MLPPolicy
+
+from torch.utils.tensorboard import SummaryWriter
 
 
 def train_single_policy(
@@ -44,6 +49,8 @@ def train_single_policy(
     learning_rate: float = 0.001,
     val_dataloader: Optional[torch.utils.data.DataLoader] = None,
     wandb_run=None,
+    tensorboard_writer: Optional[SummaryWriter] = None,
+    logger: Optional[logging.Logger] = None,
 ):
     """Train a single policy with the specified loss function"""
 
@@ -51,6 +58,8 @@ def train_single_policy(
     optimizer = torch.optim.Adam(trained_policy.parameters(), lr=learning_rate)
 
     # Training loop
+    if logger is not None:
+        logger.info(f"Starting training for {n_updates} epochs")
     for epoch in tqdm(range(n_updates), desc="Training epochs"):
         # Training phase
         trained_policy.train()
@@ -60,15 +69,6 @@ def train_single_policy(
         batch_count = 0
         for X, y in train_dataloader:
             loss, metrics = loss_function.compute_loss(trained_policy, X, y)
-
-            if wandb_run is not None:
-                # Filter to only log scalar metrics
-                scalar_metrics = {
-                    f"train/{k}": v
-                    for k, v in metrics.items()
-                    if isinstance(v, (int, float))
-                }
-                wandb_run.log(scalar_metrics)
 
             optimizer.zero_grad()
             loss.backward()
@@ -91,14 +91,20 @@ def train_single_policy(
         avg_grad_norm = epoch_grad_norm / batch_count
 
         # Track training metrics
+        scalar_metrics = {
+            k: v for k, v in metrics.items() if isinstance(v, (int, float))
+        }
+        scalar_metrics["loss"] = avg_loss
+        scalar_metrics["grad_norm"] = avg_grad_norm
+
         if wandb_run is not None:
-            wandb_run.log(
-                {
-                    "epoch": epoch,
-                    "train/loss": avg_loss,
-                    "train/grad_norm": avg_grad_norm,
-                }
-            )
+            wandb_metrics = {f"train/{k}": v for k, v in scalar_metrics.items()}
+            wandb_metrics["epoch"] = epoch
+            wandb_run.log(wandb_metrics)
+
+        if tensorboard_writer is not None:
+            for k, v in scalar_metrics.items():
+                tensorboard_writer.add_scalar(f"train/{k}", v, epoch)
 
         # Validation phase
         if val_dataloader is not None:
@@ -110,138 +116,82 @@ def train_single_policy(
                 for X, y in val_dataloader:
                     val_loss, metrics = loss_function.compute_loss(trained_policy, X, y)
                     val_epoch_loss += val_loss.item()
-
-                    if wandb_run is not None:
-                        # Log validation metrics
-                        scalar_metrics = {
-                            f"val/{k}": v
-                            for k, v in metrics.items()
-                            if isinstance(v, (int, float))
-                        }
-                        wandb_run.log(scalar_metrics)
-
                     val_batch_count += 1
 
             avg_val_loss = val_epoch_loss / val_batch_count
 
             # Track validation metrics
+            val_scalar_metrics = {
+                k: v for k, v in metrics.items() if isinstance(v, (int, float))
+            }
+            val_scalar_metrics["loss"] = avg_val_loss
+
             if wandb_run is not None:
-                wandb_run.log({"val/loss": avg_val_loss})
+                wandb_val_metrics = {
+                    f"val/{k}": v for k, v in val_scalar_metrics.items()
+                }
+                wandb_run.log(wandb_val_metrics)
+
+            if tensorboard_writer is not None:
+                for k, v in val_scalar_metrics.items():
+                    tensorboard_writer.add_scalar(f"val/{k}", v, epoch)
 
     return trained_policy
 
 
-# def compare_dist_unified(
-#     policy: MLPPolicy,
-#     X: torch.tensor,
-#     y: torch.tensor,
-#     loss_types: List[L.LossType],
-#     n_updates: int = 1,
-#     learning_rate: float = 0.001,
-#     # Policy optimization parameters
-#     n_generations_grpo: int = 5,
-#     rsample_for_grpo: bool = False,
-#     reward_transform: str = "normalize",  # "normalize", "rbf", "none"
-#     RBF_gamma: Optional[float] = None,
-# ):
-#     """
-#     Unified comparison function that trains policies with specified loss types
+def setup_logger(
+    logger_name,
+    exp_name,
+    log_dir,
+    env_id,
+    log_level: str = "INFO",
+    create_ts_writer: bool = True,
+) -> tuple:
+    # Clear existing handlers
+    root = logging.getLogger(logger_name)
+    if root.handlers:
+        for handler in root.handlers:
+            root.removeHandler(handler)
 
-#     Args:
-#         policy: Base policy to copy and train
-#         X: Input tensor
-#         y: Target tensor
-#         loss_types: List of LossType enums specifying which losses to use
-#         n_updates: Number of training updates
-#         learning_rate: Learning rate for all optimizers
-#         n_generations_grpo: Number of generations for policy optimization
-#         rsample_for_grpo: Whether to use rsample for policy optimization
-#         reward_transform: Type of reward transformation ("normalize", "rbf", "none")
-#         RBF_gamma: Gamma parameter for RBF kernel (if using RBF transform)
+    # Create logs directory if it doesn't exist
+    os.makedirs(log_dir, exist_ok=True)
 
-#     Returns:
-#         Dictionary mapping loss type names to their results
-#     """
+    # Create log filename with timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = os.path.join(log_dir, env_id, f"{exp_name}")
+    os.makedirs(run_dir, exist_ok=True)
+    log_file = os.path.join(run_dir, f"{timestamp}.log")
 
-#     results = {}
+    # Set format for both handlers
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
 
-#     for loss_type in loss_types:
-#         if loss_type == LossType.DETERMINISTIC:
-#             loss_fn = DeterministicLoss()
-#         elif loss_type == LossType.SUPERVISED_NLL:
-#             loss_fn = SupervisedNLLLoss()
-#         elif loss_type == LossType.SUPERVISED_MSE:
-#             loss_fn = SupervisedMSELoss()
-#         elif loss_type == LossType.POLICY_OPTIMIZATION:
-#             loss_fn = PolicyOptimizationLoss(
-#                 n_generations=n_generations_grpo,
-#                 use_rsample=rsample_for_grpo,
-#                 reward_transform=reward_transform,
-#                 rbf_gamma=RBF_gamma
-#             )
-#         else:
-#             raise ValueError(f"Unknown loss type: {loss_type}")
+    # Configure file handler
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setFormatter(formatter)
 
-#         # Train policy with this loss function
-#         policy_results = train_single_policy(
-#             policy=policy,
-#             X=X,
-#             y=y,
-#             loss_function=loss_fn,
-#             n_updates=n_updates,
-#             learning_rate=learning_rate
-#         )
+    # Configure console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
 
-#         results[loss_type.value] = policy_results
+    # Set up root logger
+    root.setLevel(getattr(logging, log_level))
+    root.addHandler(file_handler)
+    root.addHandler(console_handler)
 
-#     return results
+    # Set up TensorBoard logger
+    writer = None
+    if create_ts_writer:
+        try:
+            tb_log_dir = os.path.join(run_dir, "tensorboard", timestamp)
+            os.makedirs(tb_log_dir, exist_ok=True)
+            writer = SummaryWriter(log_dir=tb_log_dir)
+        except ImportError:
+            root.warning(
+                "Failed to import TensorBoard. "
+                "No TensorBoard logging will be performed."
+            )
 
-# # Backward compatibility function
-# def compare_dist(
-#     policy: MLPPolicy,
-#     X: torch.tensor,
-#     y: torch.tensor,
-#     n_updates: int = 1,
-#     n_generations_grpo: int = 5,
-#     learning_rate: float = 0.001,
-#     sup_log_prob: bool = True,
-#     rsample_for_grpo: bool = False,
-#     RBF_gamma: Optional[float] = None,
-# ):
-#     """
-#     Backward compatible version of compare_dist that maintains the original interface
-#     """
-
-#     # Determine loss types based on original parameters
-#     loss_types = [LossType.DETERMINISTIC]
-
-#     if sup_log_prob:
-#         loss_types.append(LossType.SUPERVISED_NLL)
-#     else:
-#         loss_types.append(LossType.SUPERVISED_MSE)
-
-#     loss_types.append(LossType.POLICY_OPTIMIZATION)
-
-#     # Determine reward transform
-#     reward_transform = "rbf" if RBF_gamma is not None else "normalize"
-
-#     # Call unified function
-#     results = compare_dist_unified(
-#         policy=policy,
-#         X=X,
-#         y=y,
-#         loss_types=loss_types,
-#         n_updates=n_updates,
-#         learning_rate=learning_rate,
-#         n_generations_grpo=n_generations_grpo,
-#         rsample_for_grpo=rsample_for_grpo,
-#         reward_transform=reward_transform,
-#         RBF_gamma=RBF_gamma
-#     )
-
-#     # Return in original format for backward compatibility
-#     det = results.get("deterministic", {})
-#     supervised = results.get("supervised_nll" if sup_log_prob else "supervised_mse", {})
-#     grpo = results.get("policy_optimization", {})
-
-#     return (det, supervised, grpo)
+    return root, run_dir, writer
