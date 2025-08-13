@@ -57,6 +57,10 @@ def train_single_policy(
     trained_policy = copy.deepcopy(policy).train()
     optimizer = torch.optim.Adam(trained_policy.parameters(), lr=learning_rate)
 
+    # Initialize metric tracking dictionaries
+    train_metrics_history = {}
+    val_metrics_history = {}
+
     # Training loop
     if logger is not None:
         logger.info(f"Starting training for {n_updates} epochs")
@@ -97,6 +101,12 @@ def train_single_policy(
         scalar_metrics["loss"] = avg_loss
         scalar_metrics["grad_norm"] = avg_grad_norm
 
+        # Add to training metrics history
+        for k, v in scalar_metrics.items():
+            if k not in train_metrics_history:
+                train_metrics_history[k] = []
+            train_metrics_history[k].append(v)
+
         if wandb_run is not None:
             wandb_metrics = {f"train/{k}": v for k, v in scalar_metrics.items()}
             wandb_metrics["epoch"] = epoch
@@ -126,6 +136,12 @@ def train_single_policy(
             }
             val_scalar_metrics["loss"] = avg_val_loss
 
+            # Add to validation metrics history
+            for k, v in val_scalar_metrics.items():
+                if k not in val_metrics_history:
+                    val_metrics_history[k] = []
+                val_metrics_history[k].append(v)
+
             if wandb_run is not None:
                 wandb_val_metrics = {
                     f"val/{k}": v for k, v in val_scalar_metrics.items()
@@ -136,7 +152,7 @@ def train_single_policy(
                 for k, v in val_scalar_metrics.items():
                     tensorboard_writer.add_scalar(f"val/{k}", v, epoch)
 
-    return trained_policy
+    return trained_policy, train_metrics_history, val_metrics_history
 
 
 def setup_logger(
