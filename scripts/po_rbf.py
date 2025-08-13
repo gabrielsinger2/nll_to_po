@@ -61,7 +61,7 @@ def main(args: ExperimentConfig):
 
                         # Generate new random data for each experiment
                         X = torch.randn(1, args.input_dim)
-                        mean_y = 2 + torch.randn(1, args.output_dim) * init_dist_loc
+                        mean_y = torch.ones((1, args.output_dim)) * init_dist_loc
                         y = (
                             mean_y
                             + torch.randn(init_dist_n_samples, args.output_dim)
