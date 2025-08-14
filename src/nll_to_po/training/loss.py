@@ -1,19 +1,16 @@
 """Loss functions for training policies in NLL to PO framework."""
 
 from abc import ABC, abstractmethod
-# from enum import Enum
 
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 import torch
 import torch.nn as nn
 
+import nll_to_po.training.reward as R
 
-# class LossType(Enum):
-#     """Enum for different loss types used in training policies."""
-#     MSE = "mse"
-#     NLL = "nll"
-#     PO = "policy_optimization"
+if TYPE_CHECKING:
+    from nll_to_po.models.dn_policy import MLPPolicy
 
 
 class LossFunction(ABC):
@@ -22,7 +19,9 @@ class LossFunction(ABC):
     name: str
 
     @abstractmethod
-    def compute_loss(self, policy, X, y):
+    def compute_loss(
+        self, policy: "MLPPolicy", X: torch.Tensor, y: torch.Tensor
+    ) -> tuple[torch.Tensor, dict]:
         """Compute the loss given policy, inputs X, and targets y"""
         pass
 
@@ -61,6 +60,7 @@ class PO(LossFunction):
 
     def __init__(
         self,
+        reward_fn: R.RewardFunction,
         n_generations: int = 5,
         use_rsample: bool = False,
         reward_transform: str = "normalize",  # "normalize", "rbf", "none"
@@ -70,6 +70,7 @@ class PO(LossFunction):
         self.use_rsample = use_rsample
         self.reward_transform = reward_transform
         self.rbf_gamma = rbf_gamma
+        self.reward_fn = reward_fn
 
     def _transform_rewards(self, rewards):
         """Apply reward transformation"""
@@ -87,12 +88,13 @@ class PO(LossFunction):
 
         if self.use_rsample:
             samples = dist.rsample((self.n_generations,))
-            rewards = -nn.MSELoss(reduction="none")(samples, y).mean(dim=-1)
+            rewards = self.reward_fn(y_hat=samples, y=y)
+            rewards = self._transform_rewards(rewards)
             loss = -rewards.mean()
         else:
             samples = dist.sample((self.n_generations,))
             neg_log_prob = -dist.log_prob(samples).mean(dim=-1)
-            rewards = -nn.MSELoss(reduction="none")(samples, y).mean(dim=-1)
+            rewards = self.reward_fn(y_hat=samples, y=y)
             rewards = self._transform_rewards(rewards)
             loss = (neg_log_prob * rewards).mean()
         metrics = {
@@ -104,12 +106,13 @@ class PO(LossFunction):
 
 
 class PO_Entropy(LossFunction):
-    """Policy optimization loss with configurable reward transformation"""
+    """Policy optimization loss with configurable reward and entropy regularization"""
 
     name = "PO_Entropy"
 
     def __init__(
         self,
+        reward_fn: R.RewardFunction,
         n_generations: int = 5,
         use_rsample: bool = False,
         reward_transform: str = "normalize",  # "normalize", "rbf", "none"
@@ -121,6 +124,7 @@ class PO_Entropy(LossFunction):
         self.reward_transform = reward_transform
         self.rbf_gamma = rbf_gamma
         self.entropy_weight = entropy_weight
+        self.reward_fn = reward_fn
 
     def _transform_rewards(self, rewards):
         """Apply reward transformation"""
@@ -138,12 +142,13 @@ class PO_Entropy(LossFunction):
 
         if self.use_rsample:
             samples = dist.rsample((self.n_generations,))
-            rewards = -nn.MSELoss(reduction="none")(samples, y).mean(dim=-1)
+            rewards = self.reward_fn(y_hat=samples, y=y)
+            rewards = self._transform_rewards(rewards)
             loss = -rewards.mean()
         else:
             samples = dist.sample((self.n_generations,))
             neg_log_prob = -dist.log_prob(samples).mean(dim=-1)
-            rewards = -nn.MSELoss(reduction="none")(samples, y).mean(dim=-1)
+            rewards = self.reward_fn(y_hat=samples, y=y)
             rewards = self._transform_rewards(rewards)
             loss = (neg_log_prob * rewards).mean()
 
