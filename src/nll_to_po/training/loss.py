@@ -39,16 +39,25 @@ class MSE(LossFunction):
 
 class NLL(LossFunction):
     """Negative log-likelihood loss"""
-
+    def __init__(self,target_mu: torch.Tensor = None, 
+        target_sigma: torch.Tensor = None ):
+        super().__init__()
+        self.target_mu=target_mu
+        self.target_sigma=target_sigma
     name = "NLL"
 
     def compute_loss(self, policy, X, y):
+        #std ici c est scale_tril la triangulaire inf c
         mean, std = policy(X)
-        dist = torch.distributions.Normal(mean, std)
+        #dist = torch.distributions.Normal(mean, std)
+        dist=torch.distributions.MultivariateNormal(mean,scale_tril=std) #car je considere des matrices pleines 
         metrics = {
             "mean_error": nn.MSELoss()(mean.mean(dim=0), y.mean(dim=0)).item(),
+            "L2_error": torch.norm(mean.mean(dim=0)-self.target_mu, p=2).item(),
+            "std_error": torch.norm(std[0]*std[0].T-self.target_sigma).item(),
             "NLL": -dist.log_prob(y).mean().item(),
-            "dist": torch.distributions.Normal(mean[0].clone(), std[0].clone()),
+            "dist":  torch.distributions.MultivariateNormal(loc=mean[0].clone(),
+                                                            scale_tril=std[0].clone()),
         }
         return -dist.log_prob(y).mean(), metrics
 
@@ -84,8 +93,8 @@ class PO(LossFunction):
 
     def compute_loss(self, policy, X, y):
         mean, std = policy(X)
-        dist = torch.distributions.Normal(mean, std)
-
+        #dist = torch.distributions.Normal(mean, std)
+        dist=torch.distributions.MultivariateNormal(mean,scale_tril=std) #same ici 
         if self.use_rsample:
             samples = dist.rsample((self.n_generations,))
             rewards = self.reward_fn(y_hat=samples, y=y)
@@ -93,14 +102,15 @@ class PO(LossFunction):
             loss = -rewards.mean()
         else:
             samples = dist.sample((self.n_generations,))
-            neg_log_prob = -dist.log_prob(samples).mean(dim=-1)
+            neg_log_prob = -dist.log_prob(samples).mean() #avant mean=-1
             rewards = self.reward_fn(y_hat=samples, y=y)
             rewards = self._transform_rewards(rewards)
             loss = (neg_log_prob * rewards).mean()
         metrics = {
             "mean_error": nn.MSELoss()(mean.mean(dim=0), y.mean(dim=0)).item(),
             "NLL": -dist.log_prob(y).mean().item(),
-            "dist": torch.distributions.Normal(mean[0].clone(), std[0].clone()),
+            "dist": torch.distributions.MultivariateNormal(loc=mean[0].clone(),
+                                                            scale_tril=std[0].clone()),
         }
         return loss, metrics
 
@@ -118,6 +128,8 @@ class PO_Entropy(LossFunction):
         reward_transform: str = "normalize",  # "normalize", "rbf", "none"
         rbf_gamma: Optional[float] = None,
         entropy_weight: float = 0.01,
+        target_mu: torch.Tensor = None, 
+        target_sigma: torch.Tensor = None 
     ):
         self.n_generations = n_generations
         self.use_rsample = use_rsample
@@ -125,6 +137,8 @@ class PO_Entropy(LossFunction):
         self.rbf_gamma = rbf_gamma
         self.entropy_weight = entropy_weight
         self.reward_fn = reward_fn
+        self.target_mu= target_mu
+        self.target_sigma= target_sigma
 
     def _transform_rewards(self, rewards):
         """Apply reward transformation"""
@@ -138,8 +152,8 @@ class PO_Entropy(LossFunction):
 
     def compute_loss(self, policy, X, y):
         mean, std = policy(X)
-        dist = torch.distributions.Normal(mean, std)
-
+        #dist = torch.distributions.Normal(mean, std)
+        dist=torch.distributions.MultivariateNormal(mean,scale_tril=std)
         if self.use_rsample:
             samples = dist.rsample((self.n_generations,))
             rewards = self.reward_fn(y_hat=samples, y=y)
@@ -147,17 +161,20 @@ class PO_Entropy(LossFunction):
             loss = -rewards.mean()
         else:
             samples = dist.sample((self.n_generations,))
-            neg_log_prob = -dist.log_prob(samples).mean(dim=-1)
+            neg_log_prob = -dist.log_prob(samples) #.mean() #dim=-1
             rewards = self.reward_fn(y_hat=samples, y=y)
             rewards = self._transform_rewards(rewards)
             loss = (neg_log_prob * rewards).mean()
 
-        loss += self.entropy_weight * dist.entropy().mean()
+        loss -= self.entropy_weight * dist.entropy().mean() #signe -
 
         metrics = {
             "mean_error": nn.MSELoss()(mean.mean(dim=0), y.mean(dim=0)).item(),
+            "L2_error": torch.norm(mean.mean(dim=0)-self.target_mu, p=2).item(),
+            "std_error": torch.norm(std[0]*std[0].T-self.target_sigma).item(),
             "NLL": -dist.log_prob(y).mean().item(),
-            "dist": torch.distributions.Normal(mean[0].clone(), std[0].clone()),
+            "dist": torch.distributions.MultivariateNormal(loc=mean[0].clone(),
+                                                            scale_tril=std[0].clone()),
             "entropy": dist.entropy().mean().item(),
         }
         return loss, metrics
