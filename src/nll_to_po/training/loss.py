@@ -1,5 +1,5 @@
 """Loss functions for training policies in NLL to PO framework."""
-
+""" The classes for full covariance matrix are name {OriginalClassName}_Full_Cov"""
 from abc import ABC, abstractmethod
 
 from typing import Optional, TYPE_CHECKING
@@ -36,8 +36,132 @@ class MSE(LossFunction):
         loss = nn.MSELoss()(mean, y)
         return loss, {"mean_error": loss.item()}
 
-
 class NLL(LossFunction):
+    """Negative log-likelihood loss"""
+
+    name = "NLL"
+
+    def compute_loss(self, policy, X, y):
+        mean, std = policy(X)
+        dist = torch.distributions.Normal(mean, std)
+        metrics = {
+            "mean_error": nn.MSELoss()(mean.mean(dim=0), y.mean(dim=0)).item(),
+            "NLL": -dist.log_prob(y).mean().item(),
+            "dist": torch.distributions.Normal(mean[0].clone(), std[0].clone()),
+        }
+        return -dist.log_prob(y).mean(), metrics
+
+
+class PO(LossFunction):
+    """Policy optimization loss with configurable reward transformation"""
+
+    name = "PO"
+
+    def __init__(
+        self,
+        reward_fn: R.RewardFunction,
+        n_generations: int = 5,
+        use_rsample: bool = False,
+        reward_transform: str = "normalize",  # "normalize", "rbf", "none"
+        rbf_gamma: Optional[float] = None,
+    ):
+        self.n_generations = n_generations
+        self.use_rsample = use_rsample
+        self.reward_transform = reward_transform
+        self.rbf_gamma = rbf_gamma
+        self.reward_fn = reward_fn
+
+    def _transform_rewards(self, rewards):
+        """Apply reward transformation"""
+        if self.reward_transform == "rbf" and self.rbf_gamma is not None:
+            return torch.exp(self.rbf_gamma * rewards)
+        elif self.reward_transform == "normalize":
+            rewards_min, _ = rewards.aminmax(dim=0, keepdim=True)
+            return rewards - rewards_min
+        else:  # "none"
+            return rewards
+
+    def compute_loss(self, policy, X, y):
+        mean, std = policy(X)
+        dist = torch.distributions.Normal(mean, std)
+
+        if self.use_rsample:
+            samples = dist.rsample((self.n_generations,))
+            rewards = self.reward_fn(y_hat=samples, y=y)
+            rewards = self._transform_rewards(rewards)
+            loss = -rewards.mean()
+        else:
+            samples = dist.sample((self.n_generations,))
+            neg_log_prob = -dist.log_prob(samples).mean(dim=-1)
+            rewards = self.reward_fn(y_hat=samples, y=y)
+            rewards = self._transform_rewards(rewards)
+            loss = (neg_log_prob * rewards).mean()
+        metrics = {
+            "mean_error": nn.MSELoss()(mean.mean(dim=0), y.mean(dim=0)).item(),
+            "NLL": -dist.log_prob(y).mean().item(),
+            "dist": torch.distributions.Normal(mean[0].clone(), std[0].clone()),
+        }
+        return loss, metrics
+
+
+class PO_Entropy(LossFunction):
+    """Policy optimization loss with configurable reward and entropy regularization"""
+
+    name = "PO_Entropy"
+
+    def __init__(
+        self,
+        reward_fn: R.RewardFunction,
+        n_generations: int = 5,
+        use_rsample: bool = False,
+        reward_transform: str = "normalize",  # "normalize", "rbf", "none"
+        rbf_gamma: Optional[float] = None,
+        entropy_weight: float = 0.01,
+    ):
+        self.n_generations = n_generations
+        self.use_rsample = use_rsample
+        self.reward_transform = reward_transform
+        self.rbf_gamma = rbf_gamma
+        self.entropy_weight = entropy_weight
+        self.reward_fn = reward_fn
+
+    def _transform_rewards(self, rewards):
+        """Apply reward transformation"""
+        if self.reward_transform == "rbf" and self.rbf_gamma is not None:
+            return torch.exp(self.rbf_gamma * rewards)
+        elif self.reward_transform == "normalize":
+            rewards_min, _ = rewards.aminmax(dim=0, keepdim=True)
+            return rewards - rewards_min
+        else:  # "none"
+            return rewards
+
+    def compute_loss(self, policy, X, y):
+        mean, std = policy(X)
+        dist = torch.distributions.Normal(mean, std)
+
+        if self.use_rsample:
+            samples = dist.rsample((self.n_generations,))
+            rewards = self.reward_fn(y_hat=samples, y=y)
+            rewards = self._transform_rewards(rewards)
+            loss = -rewards.mean()
+        else:
+            samples = dist.sample((self.n_generations,))
+            neg_log_prob = -dist.log_prob(samples).mean(dim=-1)
+            rewards = self.reward_fn(y_hat=samples, y=y)
+            rewards = self._transform_rewards(rewards)
+            loss = (neg_log_prob * rewards).mean()
+
+        loss += self.entropy_weight * dist.entropy().mean()
+
+        metrics = {
+            "mean_error": nn.MSELoss()(mean.mean(dim=0), y.mean(dim=0)).item(),
+            "NLL": -dist.log_prob(y).mean().item(),
+            "dist": torch.distributions.Normal(mean[0].clone(), std[0].clone()),
+            "entropy": dist.entropy().mean().item(),
+        }
+        return loss, metrics
+
+class NLL_Full_Cov(LossFunction):
     """Negative log-likelihood loss"""
     def __init__(self,target_mu: torch.Tensor = None, 
         target_sigma: torch.Tensor = None ):
@@ -51,10 +175,11 @@ class NLL(LossFunction):
         mean, std = policy(X)
         #dist = torch.distributions.Normal(mean, std)
         dist=torch.distributions.MultivariateNormal(mean,scale_tril=std) #car je considere des matrices pleines 
+        cholesky_part=torch.linalg.cholesky(self.target_sigma)
         metrics = {
             "mean_error": nn.MSELoss()(mean.mean(dim=0), y.mean(dim=0)).item(),
             "L2_error": torch.norm(mean.mean(dim=0)-self.target_mu, p=2).item(),
-            "std_error": torch.norm(std[0]*std[0].T-self.target_sigma).item(),
+            "std_error": torch.norm(std[0]-cholesky_part, p='fro').item(),
             "NLL": -dist.log_prob(y).mean().item(),
             "dist":  torch.distributions.MultivariateNormal(loc=mean[0].clone(),
                                                             scale_tril=std[0].clone()),
@@ -62,7 +187,8 @@ class NLL(LossFunction):
         return -dist.log_prob(y).mean(), metrics
 
 
-class PO(LossFunction):
+
+class PO_Full_Cov(LossFunction):
     """Policy optimization loss with configurable reward transformation"""
 
     name = "PO"
@@ -102,20 +228,25 @@ class PO(LossFunction):
             loss = -rewards.mean()
         else:
             samples = dist.sample((self.n_generations,))
-            neg_log_prob = -dist.log_prob(samples).mean() #avant mean=-1
+            neg_log_prob = -dist.log_prob(samples) #.mean() #avant mean=-1
             rewards = self.reward_fn(y_hat=samples, y=y)
             rewards = self._transform_rewards(rewards)
             loss = (neg_log_prob * rewards).mean()
+        cholesky_lower=torch.linalg.cholesky(self.target_sigma)
+        #j ai ajoute quelques metriques
         metrics = {
             "mean_error": nn.MSELoss()(mean.mean(dim=0), y.mean(dim=0)).item(),
+            "L2_error": torch.norm(mean.mean(dim=0)-self.target_mu, p=2).item(),
+            "std_error": torch.norm(std[0]-cholesky_lower,p='fro').item(),
             "NLL": -dist.log_prob(y).mean().item(),
             "dist": torch.distributions.MultivariateNormal(loc=mean[0].clone(),
                                                             scale_tril=std[0].clone()),
+            "entropy": dist.entropy().mean().item(),
         }
         return loss, metrics
 
 
-class PO_Entropy(LossFunction):
+class PO_Entropy_Full_Cov(LossFunction):
     """Policy optimization loss with configurable reward and entropy regularization"""
 
     name = "PO_Entropy"
@@ -167,11 +298,11 @@ class PO_Entropy(LossFunction):
             loss = (neg_log_prob * rewards).mean()
 
         loss -= self.entropy_weight * dist.entropy().mean() #signe -
-
+        cholesky_lower=torch.linalg.cholesky(self.target_sigma)
         metrics = {
             "mean_error": nn.MSELoss()(mean.mean(dim=0), y.mean(dim=0)).item(),
             "L2_error": torch.norm(mean.mean(dim=0)-self.target_mu, p=2).item(),
-            "std_error": torch.norm(std[0]*std[0].T-self.target_sigma).item(),
+            "std_error": torch.norm(std[0]-cholesky_lower,p='fro').item(),
             "NLL": -dist.log_prob(y).mean().item(),
             "dist": torch.distributions.MultivariateNormal(loc=mean[0].clone(),
                                                             scale_tril=std[0].clone()),

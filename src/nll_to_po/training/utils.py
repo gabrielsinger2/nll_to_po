@@ -51,12 +51,13 @@ def train_single_policy(
     wandb_run=None,
     tensorboard_writer: Optional[SummaryWriter] = None,
     logger: Optional[logging.Logger] = None,
+    adam_weight_decay: float= 1e-2,
 ):
     """Train a single policy with the specified loss function"""
 
     trained_policy = copy.deepcopy(policy).train()
-    optimizer = torch.optim.Adam(trained_policy.parameters(), lr=learning_rate)
-
+    #optimizer = torch.optim.Adam(trained_policy.parameters(), lr=learning_rate)
+    optimizer = torch.optim.AdamW(trained_policy.parameters(),lr=learning_rate, weight_decay=adam_weight_decay)
     # Initialize metric tracking dictionaries
     train_metrics_history = {}
     val_metrics_history = {}
@@ -79,7 +80,7 @@ def train_single_policy(
 
             # Compute gradient norm
             grad_norm = torch.nn.utils.clip_grad_norm_(
-                trained_policy.parameters(), max_norm=1e9
+                trained_policy.parameters(), max_norm=1e-1
             )
 
             optimizer.step()
