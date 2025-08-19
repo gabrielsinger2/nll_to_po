@@ -47,7 +47,7 @@ import torch.nn as nn
 
 import torch.nn.functional as F
 
-class MLPPolicy_Full_Cov(nn.Module):
+class old_MLPPolicy_Full_Cov(nn.Module):
     "Toute matrice sym def positive s'ecrit LL.T avec L triang inf donc ici on "
     "approche Sigma par LL.T"
     def __init__(self, input_dim, output_dim, hidden_sizes):
@@ -73,7 +73,7 @@ class MLPPolicy_Full_Cov(nn.Module):
         h = self.net(x)
         mean = self.mean_layer(h)
 
-        # construire la matrice triangulaire
+        #construire la matrice triangulaire
         tril_params = self.tril_layer(h)  # (batch_size, n_tril)
         batch_size = x.shape[0]
 
@@ -83,11 +83,55 @@ class MLPPolicy_Full_Cov(nn.Module):
 
         scale_tril[:, self.tril_idx[0], self.tril_idx[1]] = tril_params
 
-        #diag_idx = torch.arange(self.output_dim)
         #modif sur la diag
         diag_coeff=scale_tril[:, self.diag_index, self.diag_index]
-        diag_coeff=F.softplus(diag_coeff+1e-3)
-        diag_coeff=diag_coeff.clamp(max=1e3)
+        diag_coeff=F.relu(diag_coeff)+1e-6
+        diag_coeff=diag_coeff #.clamp(max=1e6)
         scale_tril[:, self.diag_index, self.diag_index]=diag_coeff
 
         return mean, scale_tril 
+
+
+class MLPPolicy_Full_Cov(nn.Module):
+    """Sigma = L L^T avec L triangulaire inférieure prédite par le réseau."""
+    def __init__(self, input_dim, output_dim, hidden_sizes):
+        super().__init__()
+        self.output_dim = output_dim
+
+        self.register_buffer("tril_idx", torch.tril_indices(output_dim, output_dim, 0))
+        self.register_buffer("diag_index", torch.arange(output_dim))
+
+        layers, dims = [], [input_dim] + hidden_sizes
+        for i in range(len(dims) - 1):
+            layers += [nn.Linear(dims[i], dims[i+1]), nn.Tanh()]
+        self.net = nn.Sequential(*layers)
+
+        # têtes
+        self.mean_layer = nn.Linear(dims[-1], output_dim)
+        n_tril = output_dim * (output_dim + 1) // 2
+        self.tril_layer = nn.Linear(dims[-1], n_tril)
+
+        #hyper de stabilité
+        self.min_std = 1e-3
+        self.max_std = 1e3
+        self.jitter  = 1e-6
+
+    def forward(self, x):
+        h = self.net(x)
+        mean = self.mean_layer(h)
+
+        B, D = x.shape[0], self.output_dim
+        scale_tril = h.new_zeros(B, D, D)
+
+        tril_params = self.tril_layer(h)                     #(B, n_tril)
+        scale_tril[:, self.tril_idx[0], self.tril_idx[1]] = tril_params
+
+        d = scale_tril[:, self.diag_index, self.diag_index]  #(B, D)
+        d = F.softplus(d)                     
+        d = d.clamp(max=self.max_std)
+        scale_tril[:, self.diag_index, self.diag_index] = d
+
+        eye = torch.eye(D, device=x.device, dtype=scale_tril.dtype).unsqueeze(0)
+        scale_tril = scale_tril + self.jitter * eye
+
+        return mean, scale_tril
