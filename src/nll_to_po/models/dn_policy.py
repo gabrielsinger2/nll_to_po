@@ -106,7 +106,7 @@ class MLPPolicy_Full_Cov(nn.Module):
             layers += [nn.Linear(dims[i], dims[i+1]), nn.Tanh()]
         self.net = nn.Sequential(*layers)
 
-        # têtes
+        #têtes
         self.mean_layer = nn.Linear(dims[-1], output_dim)
         n_tril = output_dim * (output_dim + 1) // 2
         self.tril_layer = nn.Linear(dims[-1], n_tril)
@@ -130,8 +130,6 @@ class MLPPolicy_Full_Cov(nn.Module):
         d = F.softplus(d)                     
         d = d.clamp(max=self.max_std)
         scale_tril[:, self.diag_index, self.diag_index] = d
-
         eye = torch.eye(D, device=x.device, dtype=scale_tril.dtype).unsqueeze(0)
         scale_tril = scale_tril + self.jitter * eye
-
         return mean, scale_tril
